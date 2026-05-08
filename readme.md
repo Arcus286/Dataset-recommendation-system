@@ -104,13 +104,3 @@ Final score = **35% TF-IDF** + **65% LLM semantic score**
 - Groq API key (free tier is sufficient — 14,400 requests/day)
 
 ---
-
-## Contributing
-
-Pull requests are welcome. For major changes, open an issue first.
-
----
-
-## License
-
-MIT
