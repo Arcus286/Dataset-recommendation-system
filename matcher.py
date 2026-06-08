@@ -10,6 +10,8 @@ Two-stage matching pipeline — LLM is mandatory, not optional.
   Stage 2 — TF-IDF + Keyword Overlap (fast structural filter)
       Runs on the LLM-expanded query, not the raw query. This means even
       vague queries like "unusual money movement" produce accurate column hits.
+      col_text is enriched with AI tags (keywords, summary, use cases, domain)
+      before this stage runs, making matches significantly richer.
 
   Stage 3 — LLM Re-ranking (Groq)
       Top candidates are sent back to the LLM for semantic scoring with a
@@ -101,11 +103,36 @@ transaction amount transfer wire suspicious aml sender receiver beneficiary flag
         return _fallback_expand(query)
 
 
-def score_all(profiles: list, user_query: str) -> list:
+def enrich_profile_with_tags(profile: dict, tags: dict):
+    """
+    Appends AI tag content (keywords, summary, use cases, domain) to
+    col_text so Stage 2 TF-IDF sees a much richer signal than raw
+    column names alone.
+
+    This is the key benefit of caching — the enrichment is free after
+    the first run since tags are loaded from tags_cache.json.
+    """
+    tag_data = tags.get(profile["filename"], {})
+    if not tag_data:
+        return
+
+    tag_text = " ".join(filter(None, [
+        tag_data.get("domain", ""),
+        tag_data.get("summary", ""),
+        " ".join(tag_data.get("keywords", [])),
+        " ".join(tag_data.get("use_cases", [])),
+    ]))
+
+    if tag_text.strip():
+        profile["col_text"] = profile.get("col_text", "") + " " + tag_text
+
+
+def score_all(profiles: list, user_query: str, tags: dict = None) -> list:
     """
     Full three-stage pipeline:
       1. LLM query expansion
       2. TF-IDF + keyword overlap on the expanded query
+         (col_text enriched with AI tags if tags dict is provided)
       3. LLM re-ranking of top candidates
     """
     # Ensure col_text exists for every profile
@@ -115,6 +142,9 @@ def score_all(profiles: list, user_query: str) -> list:
                 c["name"].lower().replace("_", " ").replace("-", " ")
                 for c in p.get("columns", [])
             )
+        # Enrich with AI tags before TF-IDF runs
+        if tags:
+            enrich_profile_with_tags(p, tags)
 
     # ── Stage 1: LLM query expansion ─────────────────────────────────────────
     expanded_query = llm_expand_query(user_query)

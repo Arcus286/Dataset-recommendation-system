@@ -10,6 +10,7 @@ import os
 from scanner import scan_folder
 from profiler import profile_dataset
 from matcher import score_all, find_similar_datasets
+from tagger import get_tags_for_profiles
 
 st.set_page_config(page_title="DataLens", page_icon="📂",
                    layout="wide", initial_sidebar_state="expanded")
@@ -132,7 +133,7 @@ hr { border-color: var(--border) !important; margin: 1.5rem 0 !important; }
 """, unsafe_allow_html=True)
 
 # ── Session state ─────────────────────────────────────────────────────────────
-for key in ["results", "dupes", "query_used"]:
+for key in ["results", "dupes", "query_used", "tags"]:
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -158,6 +159,7 @@ with st.sidebar:
     st.caption("📄 CSV &nbsp;|&nbsp; 📊 Excel &nbsp;|&nbsp; 🗄️ SQL")
     st.divider()
     st.caption("🤖 **AI-powered** — Groq LLM understands your intent, not just keywords.")
+    st.caption("🏷️ **AI tagging** — Datasets are tagged once and cached for instant reuse.")
 
 
 # ── Page title ────────────────────────────────────────────────────────────────
@@ -196,19 +198,28 @@ if run_btn:
     with st.spinner(f"Profiling {len(valid)} datasets…"):
         profiles = [profile_dataset(d["filename"], d["df"]) for d in valid]
 
+    # ── AI Tagging (cached — only new datasets hit the LLM) ───────────────────
+    with st.spinner("Loading AI tags — new datasets will be tagged now…"):
+        tags, new_tagged = get_tags_for_profiles(profiles, folder_path)
+
+    if new_tagged > 0:
+        st.toast(f"🏷️ Tagged {new_tagged} new dataset(s) and saved to cache.", icon="✅")
+
     with st.spinner("Matching with AI — understanding your intent…"):
-        results = score_all(profiles, user_query.strip())
+        results = score_all(profiles, user_query.strip(), tags=tags)
         dupes   = find_similar_datasets(profiles)
 
     st.session_state.results    = results
     st.session_state.dupes      = dupes
     st.session_state.query_used = user_query.strip()
+    st.session_state.tags       = tags
 
 # ── Display ───────────────────────────────────────────────────────────────────
 if st.session_state.results:
     results    = st.session_state.results
     dupes      = st.session_state.dupes
     query_used = st.session_state.query_used
+    tags       = st.session_state.tags or {}
 
     n_rec     = sum(1 for r in results if r["recommended"])
     top_score = results[0]["score"] if results else 0
@@ -275,12 +286,18 @@ if st.session_state.results:
                     dup_warning = f"⚠️ {dp['similarity']}% similar to `{other}`"
                     break
 
+            # AI tag data for this result
+            tag_info = tags.get(fname, {})
+
             # ── Card using native Streamlit inside a container ────────────────
             with st.container(border=True):
                 h1, h2 = st.columns([3, 1])
                 with h1:
                     st.markdown(f"**{rec_icon} &nbsp; {fname}**")
                     st.caption(src_label)
+                    # Show AI-inferred domain tag if available
+                    if tag_info.get("domain"):
+                        st.caption(f"🏷️ {tag_info['domain']}")
                 with h2:
                     st.markdown(
                         f"<p style='text-align:right;font-family:JetBrains Mono,monospace;"
@@ -295,6 +312,14 @@ if st.session_state.results:
                 m1.caption(f"🗂 {r['num_cols']} columns")
                 m2.caption(f"TF-IDF: {r['tfidf_score']:.1f}")
                 m3.caption(f"Keyword: {r['overlap_score']:.1f}")
+
+                # AI summary
+                if tag_info.get("summary"):
+                    st.caption(f"💡 _{tag_info['summary']}_")
+
+                # AI use cases
+                if tag_info.get("use_cases"):
+                    st.caption("**Use cases:** " + " · ".join(tag_info["use_cases"][:3]))
 
                 # Matched columns
                 matched = r.get("matched_columns", [])
@@ -328,6 +353,15 @@ if st.session_state.results:
                         "dtype": "Type", "null_pct": "Null %", "unique_count": "Unique"
                     })
                     st.dataframe(df_cols, use_container_width=True, hide_index=True)
+
+                # AI tags expander
+                if tag_info.get("keywords"):
+                    with st.expander("🏷️ View AI tags"):
+                        kw_text = "  `" + "`   `".join(tag_info["keywords"][:20]) + "`"
+                        st.caption("**Keywords:** " + kw_text)
+                        if tag_info.get("use_cases"):
+                            for uc in tag_info["use_cases"]:
+                                st.caption(f"• {uc}")
 
         if displayed == 0:
             st.info("No strong matches found. Toggle 'Show low-relevance datasets' or rephrase your query.")
@@ -379,6 +413,8 @@ if st.session_state.results:
         "Relevant":        "Yes" if r["recommended"] else "No",
         "Matched Columns": ", ".join(r.get("matched_columns", [])),
         "Total Columns":   r["num_cols"],
+        "AI Domain":       tags.get(r["filename"], {}).get("domain", ""),
+        "AI Summary":      tags.get(r["filename"], {}).get("summary", ""),
         "Query":           query_used,
     } for r in results]
 
@@ -407,10 +443,13 @@ else:
 Enter your **folder path** and describe what you need in the sidebar.
 
 DataLens will rank every dataset — CSV, Excel, or SQL table — by how well
-its **column names** match your intent.
+its **column names and AI-generated tags** match your intent.
 
 Powered by **Groq LLM** — understands vague queries like *"unusual money movement"*
 or *"predict who might leave"* without needing exact keyword matches.
+
+🏷️ **AI Tagging** — each dataset is tagged once and cached permanently.
+New datasets are auto-detected and tagged on the next run.
         """)
         st.markdown("")
         st.info("💡 **Tip:** SQL files are split automatically — each table is scored separately.")
