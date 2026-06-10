@@ -6,6 +6,8 @@ Uses native Streamlit components to avoid HTML rendering issues.
 import streamlit as st
 import pandas as pd
 import os
+import plotly.express as px
+import plotly.graph_objects as go
 
 from scanner import scan_folder
 from profiler import profile_dataset
@@ -30,7 +32,7 @@ st.markdown("""
   --surface:  #0e1420;
   --surface2: #141d2e;
   --border:   #1e2d45;
-  --border2:  #263550;
+  --border2:  --263550;
   --text:     #e2e8f4;
   --muted:    #5a7090;
   --accent:   #3b82f6;
@@ -200,6 +202,7 @@ if run_btn:
 
     # ── AI Tagging (cached — only new datasets hit the LLM) ───────────────────
     with st.spinner("Loading AI tags — new datasets will be tagged now…"):
+        # Fixed: Matches your suggested Option 2 tuple-unpacking strategy
         tags, new_tagged = get_tags_for_profiles(profiles, folder_path)
 
     if new_tagged > 0:
@@ -431,6 +434,116 @@ if st.session_state.results:
     with tbl_col:
         with st.expander("📋 View full results table"):
             st.dataframe(report_df, use_container_width=True, hide_index=True)
+
+    # ── Analytics & Visualizations ────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### 📊 System Performance & Match Analytics")
+    
+    # Prepare visualization dataframe for the top 10 results
+    viz_data = report_df.head(10).copy()
+    viz_data_reversed = viz_data.iloc[::-1]
+
+    # Create two layout columns for side-by-side charts
+    v_col1, v_col2 = st.columns(2, gap="large")
+
+    with v_col1:
+        st.markdown("##### Top 10 Dataset Recommendation Scores")
+        fig_scores = px.bar(
+            viz_data_reversed,
+            x="Score",
+            y="Dataset",
+            orientation="h",
+            text="Score",
+            color="Score",
+            color_continuous_scale=["#5a7090", "#f59e0b", "#22c55e"],
+            labels={"Score": "Blended Score (0-100)"},
+        )
+        fig_scores.update_traces(texttemplate='%{text:.1f}', textposition='outside')
+        fig_scores.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font_family="Space Grotesk",
+            font_color="#e2e8f4",
+            height=400,
+            xaxis=dict(range=[0, 110], showgrid=False),
+            yaxis=dict(showgrid=False),
+            coloraxis_showscale=False
+        )
+        st.plotly_chart(fig_scores, use_container_width=True)
+
+    with v_col2:
+        st.markdown("##### Relevance Distribution")
+        def get_rel_tier(score):
+            if score >= 40: return "🟢 High Relevance (≥40)"
+            elif score >= 20: return "🟡 Medium Relevance (20-39)"
+            else: return "⚫ Low Relevance (<20)"
+
+        report_df["Relevance Tier"] = report_df["Score"].apply(get_rel_tier)
+        tier_counts = report_df["Relevance Tier"].value_counts().reset_index()
+        tier_counts.columns = ["Tier", "Count"]
+
+        color_map = {
+            "🟢 High Relevance (≥40)": "#22c55e",
+            "🟡 Medium Relevance (20-39)": "#f59e0b",
+            "⚫ Low Relevance (<20)": "#5a7090"
+        }
+
+        fig_pie = px.pie(
+            tier_counts,
+            values="Count",
+            names="Tier",
+            color="Tier",
+            color_discrete_map=color_map,
+            hole=0.4
+        )
+        fig_pie.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            font_family="Space Grotesk",
+            font_color="#e2e8f4",
+            height=400,
+            legend=dict(orientation="h", yanchor="bottom", y=-0.1, xanchor="center", x=0.5)
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    # Component breakdown chart
+    st.markdown("")
+    st.markdown("##### 🔬 Algorithmic Score Component Breakdown")
+    st.caption("Understand how Lexical filters (TF-IDF/Keyword) balanced against Semantic filters (LLM) to form the final recommendation rank.")
+    
+    fig_breakdown = go.Figure()
+    fig_breakdown.add_trace(go.Bar(
+        x=viz_data["Dataset"], y=viz_data["TF-IDF"],
+        name="TF-IDF Cosine Match", marker_color="#3b82f6"
+    ))
+    fig_breakdown.add_trace(go.Bar(
+        x=viz_data["Dataset"], y=viz_data["Keyword"],
+        name="Keyword Overlap Match", marker_color="#a78bfa"
+    ))
+    
+    viz_data["LLM Score Cleaned"] = viz_data["LLM Score"].replace("", 0)
+    fig_breakdown.add_trace(go.Bar(
+        x=viz_data["Dataset"], y=viz_data["LLM Score Cleaned"],
+        name="LLM Semantic Match", marker_color="#22c55e"
+    ))
+    fig_breakdown.add_trace(go.Scatter(
+        x=viz_data["Dataset"], y=viz_data["Score"],
+        name="Final Blended Score", mode="lines+markers",
+        line=dict(color="#ef4444", width=3, dash="dash"),
+        marker=dict(size=8, color="#ef4444")
+    ))
+
+    fig_breakdown.update_layout(
+        barmode="group",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_family="Space Grotesk",
+        font_color="#e2e8f4",
+        height=450,
+        xaxis=dict(showgrid=False, tickangle=-15),
+        yaxis=dict(title="Score Component Metric", showgrid=True, gridcolor="#1e2d45"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    st.plotly_chart(fig_breakdown, use_container_width=True)
 
 # ── Empty state ───────────────────────────────────────────────────────────────
 else:
